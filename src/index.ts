@@ -156,6 +156,7 @@ async function charge(context: DingTalkContext): Promise<ChargeResult> {
           action: 'plugin_charge',
           pack_id: context.extensionId,
           base_id: context.baseId,
+          amount: 10,
         }),
       },
       AUTH_ID,
