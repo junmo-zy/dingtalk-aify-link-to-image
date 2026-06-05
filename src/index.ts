@@ -1,11 +1,10 @@
-const {
+import {
   AuthorizationType,
   FieldExecuteCode,
   FieldType,
   FormItemComponent,
   fieldDecoratorKit,
-}: typeof import('dingtalk-docs-cool-app') = require('dingtalk-docs-cool-app/dist-node/module/fields/index.js');
-import { existsSync, readFileSync } from 'fs';
+} from 'dingtalk-docs-cool-app/dist-node/module/fields/index.js';
 
 const { t } = fieldDecoratorKit;
 
@@ -51,50 +50,12 @@ fieldDecoratorKit.setDomainList([
   'cbu01.alicdn.com',
   'myqcloud.com',
   'aiquickdraw.com',
-  '127.0.0.1',
+  'youke.xn--y7xa690gmna.cn',
   'aivip.link',
-] as any);
+]);
 
-const domainList = fieldDecoratorKit.getDomainList() as any[];
-domainList.push(
-  /(^|\.)dingtalk\.com$/i,
-  /(^|\.)dingtalkapps\.com$/i,
-  /(^|\.)alidocs\.com$/i,
-  /(^|\.)aliyuncs\.com$/i,
-  /(^|\.)alicdn\.com$/i,
-  /(^|\.)myqcloud\.com$/i,
-  /(^|\.)aiquickdraw\.com$/i,
-);
-
-function isLocalUrl(url: string): boolean {
-  const hostname = new URL(url).hostname;
-  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
-}
-
-function getLocalAuthToken(): string | undefined {
-  try {
-    const configPath = `${process.cwd()}\\config.json`;
-    if (!existsSync(configPath)) return undefined;
-    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-    return typeof config.authorizations === 'string' ? config.authorizations : undefined;
-  } catch (e: any) {
-    console.error(`[localAuth] failed to read config.json: ${e?.message}`);
-    return undefined;
-  }
-}
-
-async function fetchWithLocalhostSupport(context: DingTalkContext, url: string, options: any, authId?: string): Promise<any> {
-  if (!isLocalUrl(url)) {
-    return context.fetch(url, options, authId);
-  }
-
-  const headers = { ...(options?.headers || {}) };
-  const token = authId ? getLocalAuthToken() : undefined;
-  if (token) headers.authorization = `Bearer ${token}`;
-
-  const localFetchPackage = 'node-fetch';
-  const localFetch = module.require(localFetchPackage);
-  return localFetch(url, { ...options, headers });
+async function fetchWithAuth(context: DingTalkContext, url: string, options: any, authId?: string): Promise<any> {
+  return context.fetch(url, options, authId);
 }
 
 function parseInputText(input: any): string {
@@ -138,6 +99,13 @@ function safeFileBaseName(value: string): string {
   return cleaned.slice(0, 80) || 'image';
 }
 
+function getImageExtFromUrl(url: string): string {
+  const pathname = new URL(url).pathname.toLowerCase();
+  const match = /\.(jpe?g|png|gif|webp|bmp|svg)(?:$|[?#])/i.exec(pathname);
+  if (!match) return 'jpg';
+  return match[1] === 'jpeg' ? 'jpg' : match[1];
+}
+
 function buildAttachmentUrl(url: string, fileName: string): string {
   const host = getHost(url).toLowerCase();
   if (host === 'aivip.link') return url;
@@ -146,7 +114,7 @@ function buildAttachmentUrl(url: string, fileName: string): string {
 
 async function charge(context: DingTalkContext): Promise<ChargeResult> {
   try {
-    const res = await fetchWithLocalhostSupport(
+    const res = await fetchWithAuth(
       context,
       CHARGE_API,
       {
@@ -309,17 +277,6 @@ fieldDecoratorKit.setDecorator({
 
       debugLog({ '===2 链接已解析': { count: urls.length, hosts: urls.map(getHost) } });
 
-      const MAX_SIZE = 20 * 1024 * 1024;
-      const mimeExtMap: Record<string, string> = {
-        'image/jpeg': 'jpg',
-        'image/jpg': 'jpg',
-        'image/png': 'png',
-        'image/gif': 'gif',
-        'image/webp': 'webp',
-        'image/bmp': 'bmp',
-        'image/svg+xml': 'svg',
-      };
-      const supportedMimes = new Set(Object.keys(mimeExtMap));
       const attachments: AttachmentResult[] = [];
 
       for (let i = 0; i < urls.length; i++) {
@@ -334,26 +291,9 @@ fieldDecoratorKit.setDecorator({
           return { code: FieldExecuteCode.ConfigError, msg: '配置错误: URL 格式无效' };
         }
 
-        debugLog({ [`===3.${i + 1} 开始校验图片`]: { host: parsed.hostname } });
+        debugLog({ [`===3.${i + 1} 链接格式校验通过`]: { host: parsed.hostname } });
 
-        const headRes = await fetchWithLocalhostSupport(context, url, { method: 'HEAD' });
-        if (!headRes.ok) {
-          debugLog({ [`===3.${i + 1} 图片无法访问`]: { status: headRes.status, host: parsed.hostname } });
-          return { code: FieldExecuteCode.Error, msg: `图片 ${i + 1} 无法访问: HTTP ${headRes.status}` };
-        }
-
-        const contentType = (headRes.headers.get('content-type') || '').toLowerCase();
-        const contentLength = parseInt(headRes.headers.get('content-length') || '0', 10);
-        if (contentLength > MAX_SIZE) {
-          return { code: FieldExecuteCode.Error, msg: `图片 ${i + 1} 超过 20M (${contentLength} bytes)` };
-        }
-
-        const matchedMime = [...supportedMimes].find((mime) => contentType.includes(mime));
-        if (!matchedMime) {
-          return { code: FieldExecuteCode.Error, msg: `图片 ${i + 1} 格式不支持: ${contentType || '未知'}` };
-        }
-
-        const ext = mimeExtMap[matchedMime];
+        const ext = getImageExtFromUrl(url);
         const baseName = customNameText
           ? `${safeFileBaseName(customNameText)}${urls.length > 1 ? `_${i + 1}` : ''}`
           : `image_${urls.length > 1 ? i + 1 : Date.now()}`;
@@ -366,7 +306,7 @@ fieldDecoratorKit.setDecorator({
           url: attachmentUrl,
         });
 
-        debugLog({ [`===3.${i + 1} 图片校验通过`]: { contentType, contentLength, ext, returnHost: getHost(attachmentUrl) } });
+        debugLog({ [`===3.${i + 1} 附件链接生成`]: { ext, returnHost: getHost(attachmentUrl) } });
       }
 
       const chargeResult = await charge(context);
